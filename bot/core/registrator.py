@@ -1,60 +1,80 @@
-from pyrogram import Client
-
+import os
+from better_proxy import Proxy
+from telethon import TelegramClient
 from bot.config import settings
-from bot.core.agents import generate_random_user_agent
-from bot.utils import logger
-from bot.utils.file_manager import save_to_json
+from bot.utils import logger, proxy_utils, config_utils, CONFIG_PATH, PROXIES_PATH, SESSIONS_PATH
+
+
+API_ID = settings.API_ID
+API_HASH = settings.API_HASH
 
 
 async def register_sessions() -> None:
-    API_ID = settings.API_ID
-    API_HASH = settings.API_HASH
-
     if not API_ID or not API_HASH:
         raise ValueError("API_ID and API_HASH not found in the .env file.")
 
-    session_name = input('\nEnter the session name (press Enter to exit): ')
-
+    session_name = input('\nEnter the session name (press Enter to exit): ').strip()
     if not session_name:
         return None
 
-    raw_proxy = input("Input the proxy in the format type://user:pass:ip:port (press Enter to use without proxy): ")
-    session = await get_tg_client(session_name=session_name, proxy=raw_proxy)
-    async with session:
-        user_data = await session.get_me()
+    session_file = f"{session_name}.session"
+    device_params = {}
 
-    user_agent = generate_random_user_agent(device_type='android', browser_type='chrome')
-    save_to_json(f'sessions/accounts.json',
-                 dict_={
-                    "session_name": session_name,
-                    "user_agent": user_agent,
-                    "proxy": raw_proxy if raw_proxy else None
-                 })
-    logger.success(f'Session added successfully @{user_data.username} | {user_data.first_name} {user_data.last_name}')
+    if settings.DEVICE_PARAMS:
+        print("""Sample Device values:
+        ### Attributes:
+            device_model (`str`)     : `"Samsung SM-G998B"`
+            system_version (`str`)   : `"SDK 31"`
+            app_version (`str`)      : `"8.4.1 (2522)"`
+        """)
+        device_params.update(
+            {
+                'device_model': input('device_model: ').strip(),
+                'system_version': input('system_version: ').strip(),
+                'app_version': input('app_version: ').strip()
+            }
+        )
+    accounts_config = config_utils.read_config_file(CONFIG_PATH)
+    accounts_data = {
+        'api_id': API_ID,
+        'api_hash': API_HASH,
+        **device_params
+    }
+    proxy = None
 
+    if settings.USE_PROXY_FROM_FILE:
+        proxies = proxy_utils.get_unused_proxies(accounts_config, PROXIES_PATH)
+        if not proxies:
+            raise Exception('No unused proxies left')
+        for prox in proxies:
+            if await proxy_utils.check_proxy(prox):
+                proxy_str = prox
+                proxy = proxy_utils.to_telethon_proxy(Proxy.from_str(proxy_str))
+                accounts_data['proxy'] = proxy_str
+                break
+            else:
+                raise Exception('No unused proxies left')
+    else:
+        accounts_data['proxy'] = None
 
-async def get_tg_client(session_name: str, proxy: str | None) -> Client:
-    if not session_name:
-        raise FileNotFoundError(f"Not found session {session_name}")
-
-    if not settings.API_ID or not settings.API_HASH:
-        raise ValueError("API_ID and API_HASH not found in the .env file.")
-
-    proxy_dict = {
-        "scheme": proxy.split(":")[0],
-        "username": proxy.split(":")[1].split("//")[1],
-        "password": proxy.split(":")[2],
-        "hostname": proxy.split(":")[3],
-        "port": int(proxy.split(":")[4])
-    } if proxy else None
-
-    tg_client = Client(
-        name=session_name,
-        api_id=settings.API_ID,
-        api_hash=settings.API_HASH,
-        workdir="sessions/",
-        plugins=dict(root="bot/plugins"),
-        proxy=proxy_dict
+    accounts_config[session_name] = accounts_data
+    session = TelegramClient(
+        os.path.join(SESSIONS_PATH, session_file),
+        api_id=API_ID,
+        api_hash=API_HASH,
+        lang_code="en",
+        system_lang_code="en-US",
+        **device_params
     )
+    logger.info(f"Using proxy: {proxy}")
+    session.set_proxy(proxy)
 
-    return tg_client
+    await session.start()
+
+    user_data = await session.get_me()
+
+    if user_data:
+        config_utils.write_config_file(accounts_config, CONFIG_PATH)
+        logger.success(
+            f'Session added successfully @{user_data.username} | {user_data.first_name} {user_data.last_name}'
+        )
