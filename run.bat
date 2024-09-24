@@ -1,5 +1,4 @@
 @echo off
-title xKuCoinBot
 
 set firstRun=true
 
@@ -32,11 +31,10 @@ if not exist .env (
 	echo Skipping .env copying
 )
 
-git fetch
-git pull
-
 echo Starting the bot...
 :loop
+git fetch
+git pull
 if "%firstRun%"=="true" (
     python main.py
     set firstRun=false

@@ -38,6 +38,8 @@ class Tapper:
         self.headers['User-Agent'] = self.check_user_agent()
         self.headers.update(**get_sec_ch_ua(self.headers.get('User-Agent', '')))
 
+        self._webview_data = None
+
     def log_message(self, message) -> str:
         return f"<light-yellow>{self.session_name}</light-yellow> | {message}"
 
@@ -61,29 +63,28 @@ class Tapper:
         init_data = {}
         with self.lock:
             async with self.tg_client as client:
-                while True:
-                    try:
-                        resolve_result = await client(contacts.ResolveUsernameRequest(username='xkucoinbot'))
-                        peer = InputPeerUser(user_id=resolve_result.peer.user_id,
-                                             access_hash=resolve_result.users[0].access_hash)
-                        break
-                    except FloodWaitError as fl:
-                        fls = fl.seconds
+                if not self._webview_data:
+                    while True:
+                        try:
+                            resolve_result = await client(contacts.ResolveUsernameRequest(username='xkucoinbot'))
+                            user = resolve_result.users[0]
+                            peer = InputPeerUser(user_id=user.id, access_hash=user.access_hash)
+                            input_user = InputUser(user_id=user.id, access_hash=user.access_hash)
+                            input_bot_app = InputBotAppShortName(bot_id=input_user, short_name="kucoinminiapp")
+                            self._webview_data = {'peer': peer, 'app': input_bot_app}
+                            break
+                        except FloodWaitError as fl:
+                            fls = fl.seconds
 
-                        logger.warning(self.log_message(f"FloodWait {fl}"))
-                        logger.info(self.log_message(f"Sleep {fls}s"))
-                        await asyncio.sleep(fls + 3)
+                            logger.warning(self.log_message(f"FloodWait {fl}"))
+                            logger.info(self.log_message(f"Sleep {fls}s"))
+                            await asyncio.sleep(fls + 3)
 
                 ref_id = settings.REF_ID if random.randint(0, 100) <= 85 \
                     else "cm91dGU9JTJGdGFwLWdhbWUlM0ZpbnZpdGVyVXNlcklkJTNENTI1MjU2NTI2JTI2cmNvZGUlM0Q="
 
-                input_user = InputUser(user_id=resolve_result.peer.user_id,
-                                       access_hash=resolve_result.users[0].access_hash)
-                input_bot_app = InputBotAppShortName(bot_id=input_user, short_name="kucoinminiapp")
-
                 web_view = await client(messages.RequestAppWebViewRequest(
-                    peer=peer,
-                    app=input_bot_app,
+                    **self._webview_data,
                     platform='android',
                     write_allowed=True,
                     start_param=ref_id
@@ -154,14 +155,15 @@ class Tapper:
             log_error(self.log_message(f"Unknown error when getting user info data: {error}"))
             await asyncio.sleep(delay=random.uniform(3, 7))
 
-    async def check_proxy(self, http_client: aiohttp.ClientSession, proxy: str) -> bool:
+    async def check_proxy(self, http_client: aiohttp.ClientSession) -> bool:
+        proxy_conn = http_client._connector
         try:
-            response = await http_client.get(url='https://httpbin.org/ip', timeout=aiohttp.ClientTimeout(15))
-            ip = (await response.json()).get('origin')
-            logger.info(self.log_message(f"Proxy IP: {ip}"))
+            response = await http_client.get(url='https://ifconfig.me/ip', timeout=aiohttp.ClientTimeout(15))
+            logger.info(self.log_message(f"Proxy IP: {await response.text()}"))
             return True
         except Exception as error:
-            log_error(self.log_message(f"Proxy: {proxy} | Error: {error}"))
+            proxy_url = f"{proxy_conn._proxy_type}://{proxy_conn._proxy_host}:{proxy_conn._proxy_port}"
+            log_error(self.log_message(f"Proxy: {proxy_url} | Error: {type(error).__name__}"))
             return False
 
     async def claim_init_reward(self, http_client: aiohttp.ClientSession):
@@ -217,81 +219,75 @@ class Tapper:
         await asyncio.sleep(random_delay)
 
         access_token_created_time = 0
-
-        proxy_conn = None
-        if self.proxy:
-            proxy_conn = ProxyConnector().from_url(self.proxy)
-            http_client = CloudflareScraper(headers=self.headers, connector=proxy_conn)
-            p_type = proxy_conn._proxy_type
-            p_host = proxy_conn._proxy_host
-            p_port = proxy_conn._proxy_port
-            if not await self.check_proxy(http_client=http_client, proxy=f"{p_type}://{p_host}:{p_port}"):
-                return
-        else:
-            http_client = CloudflareScraper(headers=self.headers)
+        tg_web_data = None
 
         token_live_time = random.randint(3500, 3600)
 
         while True:
-            try:
-                sleep_time = random.uniform(settings.SLEEP_TIME[0], settings.SLEEP_TIME[1])
-                if time() - access_token_created_time >= token_live_time:
-                    tg_web_data = await self.get_tg_web_data()
+            proxy_conn = {'connector': ProxyConnector.from_url(self.proxy)} if self.proxy else {}
+            async with CloudflareScraper(headers=self.headers, timeout=aiohttp.ClientTimeout(60), **proxy_conn) as http_client:
+                if not await self.check_proxy(http_client=http_client):
+                    logger.warning(self.log_message('Failed to connect to proxy server. Sleep 5 minutes.'))
+                    await asyncio.sleep(300)
+                    continue
 
-                    if not tg_web_data:
-                        if not http_client.closed:
-                            await http_client.close()
-                        if proxy_conn and not proxy_conn.closed:
-                            proxy_conn.close()
-                        return
+                try:
+                    sleep_time = random.uniform(settings.SLEEP_TIME[0], settings.SLEEP_TIME[1])
+                    if time() - access_token_created_time >= token_live_time:
+                        tg_web_data = await self.get_tg_web_data()
 
-                    login_data = await self.login(http_client=http_client, tg_web_data=tg_web_data)
-                    if not login_data.get('success', False):
-                        logger.warning(self.log_message(f'Error while loging in: {login_data.get("msg")}'))
-                        continue
+                        if not tg_web_data:
+                            raise InvalidSession('Failed to get webview URL')
 
-                    access_token_created_time = time()
-                    token_live_time = random.randint(3500, 3600)
-                    user_info = await self.get_info_data(http_client=http_client)
-                    balance = user_info['availableAmount']
-                    logger.info(self.log_message(f"Balance: <e>{balance}</e> coins"))
-                    need_to_check = user_info['needToCheck']
-                    if need_to_check:
-                        await self.claim_init_reward(http_client=http_client)
+                        login_data = await self.login(http_client=http_client, tg_web_data=tg_web_data)
+                        if not login_data.get('success', False):
+                            logger.warning(self.log_message(f'Error while loging in: {login_data.get("msg")}'))
+                            continue
 
-                    game_config = user_info['gameConfig']
-                    taps_limit = game_config['feedUpperLimit']
-                    recover_speed = game_config['feedRecoverSpeed']
-                    interval = game_config['goldIncreaseInterval']
-                    available_taps = user_info['feedPreview']['molecule']
-                    if available_taps <= settings.MIN_ENERGY:
-                        sleep_before_taps = int((taps_limit - available_taps) / recover_speed)
-                        logger.info(self.log_message(f'Not enough taps, going to sleep '
-                                                     f'<y>{round(sleep_before_taps / 60, 1)}</y> min'))
-                        await asyncio.sleep(delay=sleep_before_taps)
-                        available_taps = taps_limit
+                        access_token_created_time = time()
+                        token_live_time = random.randint(3500, 3600)
+                        user_info = await self.get_info_data(http_client=http_client)
+                        balance = user_info['availableAmount']
+                        logger.info(self.log_message(f"Balance: <e>{balance}</e> coins"))
+                        need_to_check = user_info['needToCheck']
+                        if need_to_check:
+                            await self.claim_init_reward(http_client=http_client)
 
-                    while available_taps > settings.MIN_ENERGY:
-                        taps = min(available_taps, random.randint(settings.RANDOM_TAPS_COUNT[0], settings.RANDOM_TAPS_COUNT[1]))
-                        response = await self.send_taps(http_client=http_client, taps=taps, available_taps=available_taps)
-                        if response:
-                            await asyncio.sleep(delay=interval)
-                            available_taps = available_taps - taps + (interval * recover_speed)
-                            logger.success(self.log_message(f"Successful tapped! Got <g>+{taps}</g> Coins | "
-                                                            f"Available Taps:<lc>{available_taps}</lc>"))
-                        else:
-                            logger.warning(self.log_message(f"Failed send taps"))
-                            break
+                        game_config = user_info['gameConfig']
+                        taps_limit = game_config['feedUpperLimit']
+                        recover_speed = game_config['feedRecoverSpeed']
+                        interval = game_config['goldIncreaseInterval']
+                        available_taps = user_info['feedPreview']['molecule']
+                        if available_taps <= settings.MIN_ENERGY:
+                            sleep_before_taps = int((taps_limit - available_taps) / recover_speed)
+                            logger.info(self.log_message(f'Not enough taps, going to sleep '
+                                                         f'<y>{round(sleep_before_taps / 60, 1)}</y> min'))
+                            await asyncio.sleep(delay=sleep_before_taps)
+                            available_taps = taps_limit
 
-                logger.info(self.log_message(f"Sleep <y>{round(sleep_time / 60, 1)}</y> min"))
-                await asyncio.sleep(delay=sleep_time)
+                        while available_taps > settings.MIN_ENERGY:
+                            taps = min(available_taps, random.randint(settings.RANDOM_TAPS_COUNT[0],
+                                                                      settings.RANDOM_TAPS_COUNT[1]))
+                            response = await self.send_taps(http_client=http_client, taps=taps,
+                                                            available_taps=available_taps)
+                            if response:
+                                await asyncio.sleep(delay=interval)
+                                available_taps = available_taps - taps + (interval * recover_speed)
+                                logger.success(self.log_message(f"Successful tapped! Got <g>+{taps}</g> Coins | "
+                                                                f"Available Taps:<lc>{available_taps}</lc>"))
+                            else:
+                                logger.warning(self.log_message(f"Failed send taps"))
+                                break
 
-            except InvalidSession as error:
-                raise error
+                    logger.info(self.log_message(f"Sleep <y>{round(sleep_time / 60, 1)}</y> min"))
+                    await asyncio.sleep(delay=sleep_time)
 
-            except Exception as error:
-                log_error(self.log_message(f"Unknown error: {error}"))
-                await asyncio.sleep(delay=random.uniform(60, 120))
+                except InvalidSession as error:
+                    raise error
+
+                except Exception as error:
+                    log_error(self.log_message(f"Unknown error: {error}"))
+                    await asyncio.sleep(delay=random.uniform(60, 120))
 
 
 async def run_tapper(tg_client: TelegramClient):

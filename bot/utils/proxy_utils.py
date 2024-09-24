@@ -1,4 +1,6 @@
 import os
+import random
+
 import aiohttp
 from aiohttp_proxy import ProxyConnector
 from collections import Counter
@@ -93,6 +95,7 @@ async def get_working_proxy(accounts_config: dict, current_proxy: str | None) ->
 
     from bot.utils import PROXIES_PATH
     unused_proxies = get_unused_proxies(accounts_config, PROXIES_PATH)
+    random.shuffle(unused_proxies)
     for proxy in unused_proxies:
         if await check_proxy(proxy):
             return proxy
