@@ -1,7 +1,6 @@
 import aiohttp
 import asyncio
 import base64
-import fasteners
 import os
 import random
 import time
@@ -18,7 +17,7 @@ from telethon.functions import messages
 
 from .agents import generate_random_user_agent
 from bot.config import settings
-from bot.utils import logger, log_error, proxy_utils, config_utils, CONFIG_PATH
+from bot.utils import logger, log_error, proxy_utils, config_utils, AsyncInterProcessLock, CONFIG_PATH
 from bot.exceptions import InvalidSession
 from .headers import headers, get_sec_ch_ua
 
@@ -31,12 +30,10 @@ class Tapper:
         self.tg_client = tg_client
         self.session_name, _ = os.path.splitext(os.path.basename(tg_client.session.filename))
         self.config = config_utils.get_session_config(self.session_name, CONFIG_PATH)
-        self.proxy = self.config.get('proxy', None)
-        self.lock = fasteners.InterProcessLock(os.path.join(os.path.dirname(CONFIG_PATH), 'lock_files',  f"{self.session_name}.lock"))
+        self.proxy = self.config.get('proxy')
+        self.lock = AsyncInterProcessLock(os.path.join(os.path.dirname(CONFIG_PATH), 'lock_files',  f"{self.session_name}.lock"))
         self.start_param = ''
         self.headers = headers
-        self.headers['User-Agent'] = self.check_user_agent()
-        self.headers.update(**get_sec_ch_ua(self.headers.get('User-Agent', '')))
 
         self._webview_data = None
 
@@ -48,14 +45,15 @@ class Tapper:
     def log_message(self, message) -> str:
         return f"<light-yellow>{self.session_name}</light-yellow> | {message}"
 
-    def check_user_agent(self):
+    async def check_user_agent(self):
         user_agent = self.config.get('user_agent')
         if not user_agent:
             user_agent = generate_random_user_agent()
             self.config['user_agent'] = user_agent
-            config_utils.update_session_config_in_file(self.session_name, self.config, CONFIG_PATH)
+            await config_utils.update_session_config_in_file(self.session_name, self.config, CONFIG_PATH)
 
-        return user_agent
+        self.headers['User-Agent'] = user_agent
+        self.headers.update(**get_sec_ch_ua(user_agent))
 
     async def initialize_webview_data(self):
         if not self._webview_data:
@@ -78,7 +76,7 @@ class Tapper:
 
     async def get_tg_web_data(self) -> dict[str, str]:
         init_data = {}
-        with self.lock:
+        async with self.lock:
             try:
                 if not self.tg_client.is_connected():
                     await self.tg_client.connect()
@@ -125,9 +123,23 @@ class Tapper:
             finally:
                 if self.tg_client.is_connected():
                     await self.tg_client.disconnect()
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(15)
 
         return init_data
+
+    async def check_proxy(self, http_client: aiohttp.ClientSession) -> bool:
+        proxy_conn = http_client.connector
+        if proxy_conn and not hasattr(proxy_conn, '_proxy_host'):
+            logger.info(self.log_message(f"Running Proxy-less"))
+            return True
+        try:
+            response = await http_client.get(url='https://ifconfig.me/ip', timeout=aiohttp.ClientTimeout(15))
+            logger.info(self.log_message(f"Proxy IP: {await response.text()}"))
+            return True
+        except Exception as error:
+            proxy_url = f"{proxy_conn._proxy_type}://{proxy_conn._proxy_host}:{proxy_conn._proxy_port}"
+            log_error(self.log_message(f"Proxy: {proxy_url} | Error: {type(error).__name__}"))
+            return False
 
     async def login(self, http_client: aiohttp.ClientSession, tg_web_data: dict[str, str]):
         try:
@@ -170,20 +182,6 @@ class Tapper:
         except Exception as error:
             log_error(self.log_message(f"Unknown error when getting user info data: {error}"))
             await asyncio.sleep(delay=random.uniform(3, 7))
-
-    async def check_proxy(self, http_client: aiohttp.ClientSession) -> bool:
-        proxy_conn = http_client.connector
-        if proxy_conn and not hasattr(proxy_conn, '_proxy_host'):
-            logger.info(self.log_message(f"Running Proxy-less"))
-            return True
-        try:
-            response = await http_client.get(url='https://ifconfig.me/ip', timeout=aiohttp.ClientTimeout(15))
-            logger.info(self.log_message(f"Proxy IP: {await response.text()}"))
-            return True
-        except Exception as error:
-            proxy_url = f"{proxy_conn._proxy_type}://{proxy_conn._proxy_host}:{proxy_conn._proxy_port}"
-            log_error(self.log_message(f"Proxy: {proxy_url} | Error: {type(error).__name__}"))
-            return False
 
     async def claim_init_reward(self, http_client: aiohttp.ClientSession):
         try:
@@ -233,14 +231,13 @@ class Tapper:
             return None
 
     async def run(self) -> None:
+        await self.check_user_agent()
         random_delay = random.randint(1, settings.START_DELAY)
         logger.info(self.log_message(f"Bot will start in <ly>{random_delay}s</ly>"))
         await asyncio.sleep(random_delay)
 
         access_token_created_time = 0
         tg_web_data = None
-
-        token_live_time = random.randint(3500, 3600)
 
         proxy_conn = {'connector': ProxyConnector.from_url(self.proxy)} if self.proxy else {}
         async with CloudflareScraper(headers=self.headers, timeout=aiohttp.ClientTimeout(60), **proxy_conn) as http_client:
@@ -250,6 +247,7 @@ class Tapper:
                     await asyncio.sleep(300)
                     continue
 
+                token_live_time = random.randint(3500, 3600)
                 try:
                     sleep_time = random.uniform(settings.SLEEP_TIME[0], settings.SLEEP_TIME[1])
                     if time() - access_token_created_time >= token_live_time:
@@ -266,7 +264,6 @@ class Tapper:
                             continue
 
                         access_token_created_time = time()
-                        token_live_time = random.randint(3500, 3600)
                         user_info = await self.get_info_data(http_client=http_client)
                         balance = user_info['availableAmount']
                         logger.info(self.log_message(f"Balance: <e>{balance}</e> coins"))
