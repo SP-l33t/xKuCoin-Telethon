@@ -10,7 +10,7 @@ from aiohttp_proxy import ProxyConnector
 from better_proxy import Proxy
 from time import time
 
-from telethon import TelegramClient
+from opentele.tl import TelegramClient
 from telethon.errors import *
 from telethon.types import InputBotAppShortName, InputUser
 from telethon.functions import messages
@@ -34,7 +34,7 @@ class Tapper:
 
         session_config = config_utils.get_session_config(self.session_name, CONFIG_PATH)
 
-        if not all(key in session_config for key in ('api_id', 'api_hash', 'user_agent')):
+        if not all(key in session_config for key in ('api', 'user_agent')):
             logger.critical(self.log_message('CHECK accounts_config.json as it might be corrupted'))
             exit(-1)
 
@@ -251,7 +251,6 @@ class Tapper:
 
                 token_live_time = random.randint(3500, 3600)
                 try:
-                    sleep_time = random.uniform(settings.SLEEP_TIME[0], settings.SLEEP_TIME[1])
                     if time() - access_token_created_time >= token_live_time:
                         tg_web_data = await self.get_tg_web_data()
 
@@ -279,7 +278,7 @@ class Tapper:
                         interval = game_config['goldIncreaseInterval']
                         available_taps = user_info['feedPreview']['molecule']
                         if available_taps <= settings.MIN_ENERGY:
-                            sleep_before_taps = int((taps_limit - available_taps) / recover_speed)
+                            sleep_before_taps = int((taps_limit - available_taps) * random.uniform(1, 1.1) / recover_speed)
                             logger.info(self.log_message(f'Not enough taps, going to sleep '
                                                          f'<y>{round(sleep_before_taps / 60, 1)}</y> min'))
                             await asyncio.sleep(delay=sleep_before_taps)
@@ -299,6 +298,7 @@ class Tapper:
                                 logger.warning(self.log_message(f"Failed send taps"))
                                 break
 
+                    sleep_time = random.uniform(settings.SLEEP_TIME[0], settings.SLEEP_TIME[1])
                     logger.info(self.log_message(f"Sleep <y>{round(sleep_time / 60, 1)}</y> min"))
                     await asyncio.sleep(delay=sleep_time)
 

@@ -1,6 +1,4 @@
 import os
-import random
-
 import aiohttp
 from aiohttp_proxy import ProxyConnector
 from collections import Counter
@@ -9,6 +7,7 @@ from shutil import copyfile
 from better_proxy import Proxy
 from bot.config import settings
 from bot.utils import logger
+from random import shuffle
 
 PROXY_TYPES = {
     'socks5': ProxyType.SOCKS5,
@@ -58,14 +57,14 @@ def get_proxies(proxy_path: str) -> list[str]:
 
 
 def get_unused_proxies(accounts_config, proxy_path: str):
-    proxies_count = Counter([v['proxy'] for v in accounts_config.values()])
+    proxies_count = Counter([v.get('proxy') for v in accounts_config.values() if v.get('proxy')])
     all_proxies = get_proxies(proxy_path)
     return [proxy for proxy in all_proxies if proxies_count.get(proxy, 0) < settings.SESSIONS_PER_PROXY]
 
 
 async def check_proxy(proxy):
     url = 'https://ifconfig.me/ip'
-    proxy_conn = ProxyConnector().from_url(proxy)
+    proxy_conn = ProxyConnector.from_url(proxy)
     try:
         async with aiohttp.ClientSession(connector=proxy_conn, timeout=aiohttp.ClientTimeout(15)) as session:
             response = await session.get(url)
@@ -95,7 +94,7 @@ async def get_working_proxy(accounts_config: dict, current_proxy: str | None) ->
 
     from bot.utils import PROXIES_PATH
     unused_proxies = get_unused_proxies(accounts_config, PROXIES_PATH)
-    random.shuffle(unused_proxies)
+    shuffle(unused_proxies)
     for proxy in unused_proxies:
         if await check_proxy(proxy):
             return proxy

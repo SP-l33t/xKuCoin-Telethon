@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     API_HASH: str
     GLOBAL_CONFIG_PATH: str = "TG_FARM"
 
-    SLEEP_TIME: list[int] = [3600, 4000]
+    SLEEP_TIME: list[int] = [3600, 7200]
     START_DELAY: int = 30
     RANDOM_TAPS_COUNT: list[int] = [40, 55]
     MIN_ENERGY: int = 10
