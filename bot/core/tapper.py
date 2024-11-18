@@ -56,24 +56,20 @@ class Tapper:
         webview_url = await self.tg_client.get_app_webview_url('xkucoinbot', "kucoinminiapp", "cm91dGU9JTJGdGFwLWdhbWUlM0ZpbnZpdGVyVXNlcklkJTNENTI1MjU2NTI2JTI2cmNvZGUlM0Q=")
 
         init_data = {}
-        tg_web_data = unquote(unquote(webview_url.split('tgWebAppData=')[1].split('&tgWebAppVersion')[0]))
-        self.user_data = json.loads(parse_qs(tg_web_data).get('user', [''])[0])
+        tg_web_data = parse_qs(unquote(webview_url.split('tgWebAppData=')[1].split('&tgWebAppVersion')[0]))
+        self.user_data = json.loads(tg_web_data.get('user', [''])[0])
 
-        user_data = parse_qs(tg_web_data).get('user', [''])[0]
-        chat_instance = parse_qs(tg_web_data).get('chat_instance', [''])[0]
-        chat_type = parse_qs(tg_web_data).get('chat_type', [''])[0]
-        start_param = parse_qs(tg_web_data).get('start_param', [''])[0]
-        auth_date = parse_qs(tg_web_data).get('auth_date', [''])[0]
-        hash_value = parse_qs(tg_web_data).get('hash', [''])[0]
-        self.start_param = start_param or "cm91dGU9JTJGdGFwLWdhbWUlM0Zib3RfY2xpY2slM0RvcGVubWluaWFwcA=="
+        self.start_param = tg_web_data.get('start_param', [''])[0] or \
+                           "cm91dGU9JTJGdGFwLWdhbWUlM0Zib3RfY2xpY2slM0RvcGVubWluaWFwcA=="
 
-        init_data['auth_date'] = auth_date
-        init_data['chat_instance'] = chat_instance
-        init_data['chat_type'] = chat_type
-        init_data['hash'] = hash_value
-        init_data['start_param'] = self.start_param
-        init_data['user'] = user_data.replace('"', '\"')
+        init_data['hash'] = tg_web_data.get('hash', [''])[0]
+        init_data['auth_date'] = tg_web_data.get('auth_date', [''])[0]
         init_data['via'] = "miniApp"
+        init_data['user'] = tg_web_data.get('user', [''])[0].replace('"', '\"')
+        init_data['chat_type'] = tg_web_data.get('chat_type', [''])[0]
+        init_data['chat_instance'] = tg_web_data.get('chat_instance', [''])[0]
+        init_data['start_param'] = self.start_param
+        init_data['signature'] = tg_web_data.get('signature', [''])[0]
 
         return init_data
 
@@ -210,6 +206,8 @@ class Tapper:
                         if not login_data.get('success', False):
                             logger.warning(self.log_message(f'Error while loging in: {login_data.get("msg")}'))
                             continue
+                        if self.tg_client.is_fist_run:
+                            await first_run.append_recurring_session(self.session_name)
 
                         access_token_created_time = time()
                         user_info = await self.get_info_data(http_client=http_client)

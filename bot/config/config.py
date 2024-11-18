@@ -11,8 +11,8 @@ class Settings(BaseSettings):
     FIX_CERT: bool = False
 
     SLEEP_TIME: list[int] = [3600, 7200]
-    START_DELAY: int = 30
-    RANDOM_TAPS_COUNT: list[int] = [40, 55]
+    START_DELAY: int = 360
+    RANDOM_TAPS_COUNT: list[int] = [60, 150]
     MIN_ENERGY: int = 10
     REF_ID: str = 'cm91dGU9JTJGdGFwLWdhbWUlM0ZpbnZpdGVyVXNlcklkJTNENTI1MjU2NTI2JTI2cmNvZGUlM0Q='
 
