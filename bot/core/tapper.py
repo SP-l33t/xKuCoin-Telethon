@@ -1,10 +1,9 @@
-import aiohttp
 import asyncio
 import base64
 import json
 import os
-import re
 import time
+from aiohttp import ClientTimeout, FormData
 from urllib.parse import unquote, parse_qs
 from aiocfscrape import CloudflareScraper
 from aiohttp_proxy import ProxyConnector
@@ -59,8 +58,7 @@ class Tapper:
         tg_web_data = parse_qs(unquote(webview_url.split('tgWebAppData=')[1].split('&tgWebAppVersion')[0]))
         self.user_data = json.loads(tg_web_data.get('user', [''])[0])
 
-        self.start_param = tg_web_data.get('start_param', [''])[0] or \
-                           "cm91dGU9JTJGdGFwLWdhbWUlM0Zib3RfY2xpY2slM0RvcGVubWluaWFwcA=="
+        self.start_param = tg_web_data.get('start_param', [''])[0]
 
         init_data['hash'] = tg_web_data.get('hash', [''])[0]
         init_data['auth_date'] = tg_web_data.get('auth_date', [''])[0]
@@ -79,7 +77,7 @@ class Tapper:
             logger.info(self.log_message(f"Running Proxy-less"))
             return True
         try:
-            response = await http_client.get(url='https://ifconfig.me/ip', timeout=aiohttp.ClientTimeout(15))
+            response = await http_client.get(url='https://ifconfig.me/ip', timeout=ClientTimeout(15))
             logger.info(self.log_message(f"Proxy IP: {await response.text()}"))
             return True
         except Exception as error:
@@ -90,17 +88,13 @@ class Tapper:
     async def login(self, http_client: CloudflareScraper, tg_web_data: dict[str, str]):
         try:
             decoded_link = base64.b64decode(bytes(self.start_param, 'utf-8') + b'==').decode("utf-8")
-            json_data = {
-                'extInfo': tg_web_data,
-                'inviterUserId': decoded_link.split('UserId%3D')[1].split('%')[0]
-            }
-
-            http_client.headers['Content-Type'] = 'application/json'
+            json_data = {'extInfo': tg_web_data}
+            if 'UserId' in decoded_link:
+                json_data['inviterUserId'] = decoded_link.split('UserId%3D')[1].split('%')[0]
             response = await http_client.post(f"{XKUCOIN_API}/platform-telebot/game/login?lang=en_US",
                                               json=json_data)
 
             response.raise_for_status()
-            http_client.cookie_jar.update_cookies(response.cookies)
             response_json = await response.json()
             return response_json
 
@@ -110,7 +104,6 @@ class Tapper:
 
     async def get_info_data(self, http_client: CloudflareScraper):
         try:
-            http_client.headers.pop('Content-Type')
             await http_client.get(f"{XKUCOIN_API}/ucenter/user-info?lang=en_US")
             await asyncio.sleep(delay=1)
             await http_client.get(f'{XKUCOIN_API}/currency/transfer-currencies?flat=1&currencyType=2&lang=en_US')
@@ -152,21 +145,11 @@ class Tapper:
 
     async def send_taps(self, http_client: CloudflareScraper, taps: int, available_taps: int):
         try:
-            hash_id = self.generate_random_string(length=16)
-            boundary = f'----WebKitFormBoundary{hash_id}'
-            form_data = (
-                f'--{boundary}\r\n'
-                f'Content-Disposition: form-data; name="increment"\r\n\r\n'
-                f'{taps}\r\n'
-                f'--{boundary}\r\n'
-                f'Content-Disposition: form-data; name="molecule"\r\n\r\n'
-                f'{available_taps - taps}\r\n'
-                f'--{boundary}--\r\n'
-            )
-            http_client.headers['Content-Type'] = f'multipart/form-data; boundary={boundary}'
+            form = FormData()
+            form.add_field('increment', str(taps))
+            form.add_field('molecule', str(available_taps - taps))
             response = await http_client.post(f'{XKUCOIN_API}/platform-telebot/game/gold/increase?lang=en_US',
-                                              data=form_data)
-            http_client.headers['Content-Type'] = 'application/json'
+                                              data=form)
             response.raise_for_status()
             response_json = await response.json()
             return response_json
@@ -185,7 +168,7 @@ class Tapper:
         tg_web_data = None
 
         proxy_conn = {'connector': ProxyConnector.from_url(self.proxy)} if self.proxy else {}
-        async with CloudflareScraper(headers=self.headers, timeout=aiohttp.ClientTimeout(60), **proxy_conn) as http_client:
+        async with CloudflareScraper(headers=self.headers, timeout=ClientTimeout(60), **proxy_conn) as http_client:
             while True:
                 if not await self.check_proxy(http_client=http_client):
                     logger.warning(self.log_message('Failed to connect to proxy server. Sleep 5 minutes.'))
@@ -204,7 +187,8 @@ class Tapper:
 
                         login_data = await self.login(http_client=http_client, tg_web_data=tg_web_data)
                         if not login_data.get('success', False):
-                            logger.warning(self.log_message(f'Error while loging in: {login_data.get("msg")}'))
+                            logger.warning(self.log_message(f'Login error: {login_data.get("msg")}'))
+                            await asyncio.sleep(uniform(60, 120))
                             continue
                         if self.tg_client.is_fist_run:
                             await first_run.append_recurring_session(self.session_name)
